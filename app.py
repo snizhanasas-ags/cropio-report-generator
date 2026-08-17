@@ -158,3 +158,191 @@ def read_cropio_fuel(file):
 
 
     return df, machine, amount, source
+    def prepare_fuel_data(df, machine_col, amount_col, source_col):
+    """
+    Підготовка палива:
+    - сума заправок;
+    - розподіл по джерелах
+    """
+
+    if amount_col is None:
+        raise Exception(
+            "Не знайдено колонку кількості палива"
+        )
+
+
+    df = df.copy()
+
+
+    # перетворення літрів у число
+    df[amount_col] = (
+        df[amount_col]
+        .astype(str)
+        .str.replace(",", ".")
+    )
+
+    df[amount_col] = pd.to_numeric(
+        df[amount_col],
+        errors="coerce"
+    )
+
+
+    df = df.dropna(
+        subset=[machine_col, amount_col]
+    )
+
+
+    # якщо немає джерела
+    if source_col is None:
+        df["Джерело"] = "Паливо"
+        source_col = "Джерело"
+
+
+
+    fuel = (
+        df.groupby(
+            [
+                machine_col,
+                source_col
+            ]
+        )[amount_col]
+        .sum()
+        .reset_index()
+    )
+
+
+    return fuel
+
+
+
+def get_machine_fuel(
+        fuel_df,
+        machine,
+        machine_col,
+        source_col,
+        amount_col
+):
+    """
+    Отримати паливо для конкретної техніки
+    """
+
+    result = fuel_df[
+        fuel_df[machine_col].astype(str)
+        ==
+        str(machine)
+    ]
+
+
+    fuel_dict = {}
+
+
+    for _, row in result.iterrows():
+
+        source = str(
+            row[source_col]
+        )
+
+        amount = row[amount_col]
+
+
+        fuel_dict[source] = amount
+
+
+    return fuel_dict
+
+
+
+def merge_work_and_fuel(
+        work_df,
+        work_machine,
+        fuel_df,
+        fuel_machine,
+        fuel_source,
+        fuel_amount
+):
+    """
+    Додаємо паливо тільки у перший рядок машини
+    """
+
+    result = work_df.copy()
+
+
+    result["__паливо__"] = None
+
+
+    used_machines = set()
+
+
+    for index, row in result.iterrows():
+
+        machine = row[work_machine]
+
+
+        if machine in used_machines:
+            continue
+
+
+        fuel = get_machine_fuel(
+            fuel_df,
+            machine,
+            fuel_machine,
+            fuel_source,
+            fuel_amount
+        )
+
+
+        if fuel:
+
+            result.at[
+                index,
+                "__паливо__"
+            ] = fuel
+
+
+        used_machines.add(machine)
+
+
+
+    # техніка тільки з палива
+    work_machines = set(
+        result[work_machine]
+        .astype(str)
+    )
+
+
+    fuel_machines = set(
+        fuel_df[fuel_machine]
+        .astype(str)
+    )
+
+
+    only_fuel = fuel_machines - work_machines
+
+
+    for machine in only_fuel:
+
+        new_row = {
+            col: ""
+            for col in result.columns
+        }
+
+
+        new_row[work_machine] = machine
+
+
+        new_row["__паливо__"] = get_machine_fuel(
+            fuel_df,
+            machine,
+            fuel_machine,
+            fuel_source,
+            fuel_amount
+        )
+
+
+        result.loc[
+            len(result)
+        ] = new_row
+
+
+
+    return result
