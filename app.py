@@ -1,575 +1,195 @@
+
 import streamlit as st
 import pandas as pd
 from openpyxl import load_workbook
-from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+from openpyxl.styles import Font
 from copy import copy
 from io import BytesIO
 
 
-st.set_page_config(
-    page_title="Cropio Report Generator",
-    page_icon="🚜",
-    layout="wide"
-)
-
+st.set_page_config(page_title="Cropio Report Generator", page_icon="🚜")
 
 st.title("🚜 Автоматичне формування звіту Cropio")
 
-st.write(
-    """
-    Завантажте:
-    1. Звіт роботи техніки Cropio
-    2. Звіт видачі палива Cropio
-    3. Ваш Excel-шаблон готового звіту
-    """
-)
 
-
-work_file = st.file_uploader(
-    "📄 1. Звіт роботи техніки Cropio",
-    type=["xlsx"]
-)
-
-
-fuel_file = st.file_uploader(
-    "⛽ 2. Звіт видачі палива Cropio",
-    type=["xlsx"]
-)
-
-
-template_file = st.file_uploader(
-    "📑 3. Готовий шаблон звіту",
-    type=["xlsx"]
-)
 def find_column(df, variants):
-    """
-    Пошук колонки за ключовими словами
-    """
     for col in df.columns:
-        name = str(col).lower().strip()
-
-        for variant in variants:
-            if variant.lower() in name:
+        text = str(col).lower()
+        for v in variants:
+            if v.lower() in text:
                 return col
-
     return None
 
 
-def read_cropio_work(file):
-    """
-    Читання звіту роботи техніки
-    """
+def read_work_file(file):
+    xls = pd.ExcelFile(file)
+    df = pd.read_excel(file, sheet_name=xls.sheet_names[0])
 
-    excel = pd.ExcelFile(file)
-
-    # Беремо перший лист, якщо структура стандартна
-    sheet = excel.sheet_names[0]
-
-    df = pd.read_excel(
-        file,
-        sheet_name=sheet
-    )
-
-
-    machine = find_column(
-        df,
-        ["машина", "техніка", "vehicle", "machine"]
-    )
-
+    machine = find_column(df, ["машина", "техніка", "machine", "vehicle"])
     if not machine:
-        raise Exception(
-            "Не знайдено колонку техніки у звіті роботи"
-        )
-
+        raise Exception("Не знайдено колонку техніки у звіті роботи")
 
     return df, machine
 
 
+def read_fuel_file(file):
+    xls = pd.ExcelFile(file)
 
-def read_cropio_fuel(file):
-    """
-    Читання звіту палива
-    """
-
-    excel = pd.ExcelFile(file)
-
-    sheet = excel.sheet_names[0]
-
-
-    # пробуємо різні рядки заголовків
-    for header in range(0, 15):
-
-        df = pd.read_excel(
-            file,
-            sheet_name=sheet,
-            header=header
-        )
-
-        cols = " ".join(
-            [str(x).lower() for x in df.columns]
-        )
-
-
-        if (
-            "отрим" in cols
-            or "машин" in cols
-            or "технік" in cols
-        ):
+    for header in range(0, 20):
+        df = pd.read_excel(file, sheet_name=xls.sheet_names[0], header=header)
+        text = " ".join(map(str, df.columns)).lower()
+        if "отрим" in text or "маш" in text or "тех" in text:
             break
 
+    machine = find_column(df, ["отримувач", "машина", "техніка"])
+    amount = find_column(df, ["кількість", "літр", "паливо"])
+    source = find_column(df, ["джерело", "азс", "заправ"])
 
-    machine = find_column(
-        df,
-        [
-            "отримувач",
-            "машина",
-            "техніка",
-            "machine"
-        ]
-    )
-
-
-    amount = find_column(
-        df,
-        [
-            "кількість",
-            "літр",
-            "паливо",
-            "amount"
-        ]
-    )
-
-
-    source = find_column(
-        df,
-        [
-            "джерело",
-            "азс",
-            "місце",
-            "заправ"
-        ]
-    )
-
-
-    if not machine:
-        raise Exception(
-            "Не знайдено техніку у звіті палива"
-        )
-
+    if not machine or not amount:
+        raise Exception("Не знайдено дані по паливу")
 
     return df, machine, amount, source
-    def prepare_fuel_data(df, machine_col, amount_col, source_col):
-    """
-    Підготовка палива:
-    - сума заправок;
-    - розподіл по джерелах
-    """
-
-    if amount_col is None:
-        raise Exception(
-            "Не знайдено колонку кількості палива"
-        )
 
 
+def prepare_fuel(df, machine, amount, source):
     df = df.copy()
-
-
-    # перетворення літрів у число
-    df[amount_col] = (
-        df[amount_col]
+    df[amount] = (
+        df[amount]
         .astype(str)
         .str.replace(",", ".")
     )
+    df[amount] = pd.to_numeric(df[amount], errors="coerce")
+    df = df.dropna(subset=[machine, amount])
 
-    df[amount_col] = pd.to_numeric(
-        df[amount_col],
-        errors="coerce"
-    )
-
-
-    df = df.dropna(
-        subset=[machine_col, amount_col]
-    )
-
-
-    # якщо немає джерела
-    if source_col is None:
+    if not source:
         df["Джерело"] = "Паливо"
-        source_col = "Джерело"
+        source = "Джерело"
 
-
-
-    fuel = (
-        df.groupby(
-            [
-                machine_col,
-                source_col
-            ]
-        )[amount_col]
+    return (
+        df.groupby([machine, source])[amount]
         .sum()
         .reset_index()
     )
 
 
-    return fuel
+def get_fuel_dict(fuel, machine_col, source_col, amount_col, machine):
+    data = fuel[fuel[machine_col].astype(str) == str(machine)]
 
-
-
-def get_machine_fuel(
-        fuel_df,
-        machine,
-        machine_col,
-        source_col,
-        amount_col
-):
-    """
-    Отримати паливо для конкретної техніки
-    """
-
-    result = fuel_df[
-        fuel_df[machine_col].astype(str)
-        ==
-        str(machine)
-    ]
-
-
-    fuel_dict = {}
-
-
-    for _, row in result.iterrows():
-
-        source = str(
-            row[source_col]
-        )
-
-        amount = row[amount_col]
-
-
-        fuel_dict[source] = amount
-
-
-    return fuel_dict
-
-
-
-def merge_work_and_fuel(
-        work_df,
-        work_machine,
-        fuel_df,
-        fuel_machine,
-        fuel_source,
-        fuel_amount
-):
-    """
-    Додаємо паливо тільки у перший рядок машини
-    """
-
-    result = work_df.copy()
-
-
-    result["__паливо__"] = None
-
-
-    used_machines = set()
-
-
-    for index, row in result.iterrows():
-
-        machine = row[work_machine]
-
-
-        if machine in used_machines:
-            continue
-
-
-        fuel = get_machine_fuel(
-            fuel_df,
-            machine,
-            fuel_machine,
-            fuel_source,
-            fuel_amount
-        )
-
-
-        if fuel:
-
-            result.at[
-                index,
-                "__паливо__"
-            ] = fuel
-
-
-        used_machines.add(machine)
-
-
-
-    # техніка тільки з палива
-    work_machines = set(
-        result[work_machine]
-        .astype(str)
-    )
-
-
-    fuel_machines = set(
-        fuel_df[fuel_machine]
-        .astype(str)
-    )
-
-
-    only_fuel = fuel_machines - work_machines
-
-
-    for machine in only_fuel:
-
-        new_row = {
-            col: ""
-            for col in result.columns
-        }
-
-
-        new_row[work_machine] = machine
-
-
-        new_row["__паливо__"] = get_machine_fuel(
-            fuel_df,
-            machine,
-            fuel_machine,
-            fuel_source,
-            fuel_amount
-        )
-
-
-        result.loc[
-            len(result)
-        ] = new_row
-
-
+    result = {}
+    for _, row in data.iterrows():
+        result[str(row[source_col])] = row[amount_col]
 
     return result
-def copy_row_style(ws, source_row, target_row):
-    """
-    Копіювання оформлення рядка шаблону
-    """
 
+
+def copy_style(ws, source_row, target_row):
     for col in range(1, ws.max_column + 1):
+        a = ws.cell(source_row, col)
+        b = ws.cell(target_row, col)
 
-        source = ws.cell(
-            source_row,
-            col
-        )
-
-        target = ws.cell(
-            target_row,
-            col
-        )
-
-        if source.has_style:
-            target._style = copy(
-                source._style
-            )
-
-        if source.number_format:
-            target.number_format = (
-                source.number_format
-            )
-
-        if source.alignment:
-            target.alignment = copy(
-                source.alignment
-            )
-
-        if source.border:
-            target.border = copy(
-                source.border
-            )
-
-        if source.fill:
-            target.fill = copy(
-                source.fill
-            )
-
-        if source.font:
-            target.font = copy(
-                source.font
-            )
+        if a.has_style:
+            b._style = copy(a._style)
 
 
-def write_to_template(
-        template_file,
-        data,
-        machine_col
-):
+def create_report(work, fuel, template, work_machine,
+                  fuel_machine, fuel_source, fuel_amount):
 
-    wb = load_workbook(
-        template_file
-    )
-
+    wb = load_workbook(template)
     ws = wb.active
 
-
-    # рядок початку таблиці
     start_row = 2
-
+    style_row = ws.max_row
 
     # очищення старих даних
-    for row in ws.iter_rows(
-        min_row=start_row
-    ):
+    for row in ws.iter_rows(min_row=start_row):
         for cell in row:
             cell.value = None
 
+    row_num = start_row
+    used = set()
 
-    # беремо стиль останнього рядка шаблону
-    style_row = ws.max_row
+    for _, row in work.iterrows():
 
+        if row_num > ws.max_row:
+            ws.insert_rows(row_num)
 
-    current_row = start_row
+        copy_style(ws, style_row, row_num)
 
+        values = list(row.values)
 
-    for _, row in data.iterrows():
+        for col, value in enumerate(values[:ws.max_column], 1):
+            ws.cell(row_num, col).value = value
 
-        if current_row > ws.max_row:
+        machine = row[work_machine]
 
-            ws.insert_rows(
-                current_row
+        if machine not in used:
+            fuel_values = get_fuel_dict(
+                fuel,
+                fuel_machine,
+                fuel_source,
+                fuel_amount,
+                machine
             )
 
+            if fuel_values:
+                for source, amount in fuel_values.items():
+                    for c in range(1, ws.max_column + 1):
+                        if str(ws.cell(1, c).value) == source:
+                            cell = ws.cell(row_num, c)
+                            cell.value = amount
+                            cell.font = Font(color="FF0000")
 
-        copy_row_style(
-            ws,
-            style_row,
-            current_row
-        )
+            used.add(machine)
 
-
-        col_index = 1
-
-
-        for value in row:
-
-            if col_index <= ws.max_column:
-
-                cell = ws.cell(
-                    current_row,
-                    col_index
-                )
-
-
-                cell.value = value
-
-
-            col_index += 1
-
-
-        # паливо
-        fuel = row.get(
-            "__паливо__"
-        )
-
-
-        if isinstance(
-            fuel,
-            dict
-        ):
-
-            for source, amount in fuel.items():
-
-                # шукаємо колонку АЗС
-                for cell in ws[current_row]:
-
-                    if (
-                        str(cell.value)
-                        ==
-                        str(source)
-                    ):
-
-                        fuel_cell = ws.cell(
-                            current_row,
-                            cell.column + 1
-                        )
-
-                        fuel_cell.value = amount
-
-
-                        # червоний колір
-                        fuel_cell.font = copy(
-                            fuel_cell.font
-                        )
-
-                        fuel_cell.font = Font(
-                            name=fuel_cell.font.name,
-                            size=fuel_cell.font.size,
-                            bold=fuel_cell.font.bold,
-                            color="FF0000"
-                        )
-
-
-        current_row += 1
-
+        row_num += 1
 
     output = BytesIO()
-
-    wb.save(
-        output
-    )
-
+    wb.save(output)
     output.seek(0)
 
     return output
-    if st.button("🟢 Сформувати звіт"):
+
+
+work_file = st.file_uploader("📄 1. Звіт роботи техніки Cropio", type="xlsx")
+fuel_file = st.file_uploader("⛽ 2. Звіт видачі палива Cropio", type="xlsx")
+template_file = st.file_uploader("📑 3. Ваш Excel-шаблон", type="xlsx")
+
+
+if st.button("🟢 Сформувати звіт"):
 
     try:
+        if not work_file or not fuel_file or not template_file:
+            st.error("Завантажте всі три файли")
+            st.stop()
 
-        work, work_machine = read_cropio_work(
-            work_file
-        )
+        work, work_machine = read_work_file(work_file)
+        fuel, fuel_machine, fuel_amount, fuel_source = read_fuel_file(fuel_file)
 
-
-        fuel, fuel_machine, fuel_amount, fuel_source = read_cropio_fuel(
-            fuel_file
-        )
-
-
-        fuel_ready = prepare_fuel_data(
+        fuel = prepare_fuel(
             fuel,
             fuel_machine,
             fuel_amount,
             fuel_source
         )
 
-
-        result = merge_work_and_fuel(
+        result = create_report(
             work,
+            fuel,
+            template_file,
             work_machine,
-            fuel_ready,
             fuel_machine,
             fuel_source,
             fuel_amount
         )
 
-
-        file = write_to_template(
-            template_file,
-            result,
-            work_machine
-        )
-
-
-        st.success(
-            "✅ Звіт успішно сформовано"
-        )
-
+        st.success("✅ Звіт сформовано")
 
         st.download_button(
-            "⬇️ Завантажити готовий Excel",
-            file,
-            "Cropio_final_report.xlsx",
+            "⬇️ Завантажити Excel",
+            result,
+            "Cropio_report.xlsx",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-
     except Exception as e:
-
-        st.error(
-            f"Помилка: {e}"
-        )
+        st.error(f"Помилка: {e}")
