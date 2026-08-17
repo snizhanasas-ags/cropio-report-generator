@@ -346,3 +346,230 @@ def merge_work_and_fuel(
 
 
     return result
+def copy_row_style(ws, source_row, target_row):
+    """
+    Копіювання оформлення рядка шаблону
+    """
+
+    for col in range(1, ws.max_column + 1):
+
+        source = ws.cell(
+            source_row,
+            col
+        )
+
+        target = ws.cell(
+            target_row,
+            col
+        )
+
+        if source.has_style:
+            target._style = copy(
+                source._style
+            )
+
+        if source.number_format:
+            target.number_format = (
+                source.number_format
+            )
+
+        if source.alignment:
+            target.alignment = copy(
+                source.alignment
+            )
+
+        if source.border:
+            target.border = copy(
+                source.border
+            )
+
+        if source.fill:
+            target.fill = copy(
+                source.fill
+            )
+
+        if source.font:
+            target.font = copy(
+                source.font
+            )
+
+
+def write_to_template(
+        template_file,
+        data,
+        machine_col
+):
+
+    wb = load_workbook(
+        template_file
+    )
+
+    ws = wb.active
+
+
+    # рядок початку таблиці
+    start_row = 2
+
+
+    # очищення старих даних
+    for row in ws.iter_rows(
+        min_row=start_row
+    ):
+        for cell in row:
+            cell.value = None
+
+
+    # беремо стиль останнього рядка шаблону
+    style_row = ws.max_row
+
+
+    current_row = start_row
+
+
+    for _, row in data.iterrows():
+
+        if current_row > ws.max_row:
+
+            ws.insert_rows(
+                current_row
+            )
+
+
+        copy_row_style(
+            ws,
+            style_row,
+            current_row
+        )
+
+
+        col_index = 1
+
+
+        for value in row:
+
+            if col_index <= ws.max_column:
+
+                cell = ws.cell(
+                    current_row,
+                    col_index
+                )
+
+
+                cell.value = value
+
+
+            col_index += 1
+
+
+        # паливо
+        fuel = row.get(
+            "__паливо__"
+        )
+
+
+        if isinstance(
+            fuel,
+            dict
+        ):
+
+            for source, amount in fuel.items():
+
+                # шукаємо колонку АЗС
+                for cell in ws[current_row]:
+
+                    if (
+                        str(cell.value)
+                        ==
+                        str(source)
+                    ):
+
+                        fuel_cell = ws.cell(
+                            current_row,
+                            cell.column + 1
+                        )
+
+                        fuel_cell.value = amount
+
+
+                        # червоний колір
+                        fuel_cell.font = copy(
+                            fuel_cell.font
+                        )
+
+                        fuel_cell.font = Font(
+                            name=fuel_cell.font.name,
+                            size=fuel_cell.font.size,
+                            bold=fuel_cell.font.bold,
+                            color="FF0000"
+                        )
+
+
+        current_row += 1
+
+
+    output = BytesIO()
+
+    wb.save(
+        output
+    )
+
+    output.seek(0)
+
+    return output
+    if st.button("🟢 Сформувати звіт"):
+
+    try:
+
+        work, work_machine = read_cropio_work(
+            work_file
+        )
+
+
+        fuel, fuel_machine, fuel_amount, fuel_source = read_cropio_fuel(
+            fuel_file
+        )
+
+
+        fuel_ready = prepare_fuel_data(
+            fuel,
+            fuel_machine,
+            fuel_amount,
+            fuel_source
+        )
+
+
+        result = merge_work_and_fuel(
+            work,
+            work_machine,
+            fuel_ready,
+            fuel_machine,
+            fuel_source,
+            fuel_amount
+        )
+
+
+        file = write_to_template(
+            template_file,
+            result,
+            work_machine
+        )
+
+
+        st.success(
+            "✅ Звіт успішно сформовано"
+        )
+
+
+        st.download_button(
+            "⬇️ Завантажити готовий Excel",
+            file,
+            "Cropio_final_report.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+
+    except Exception as e:
+
+        st.error(
+            f"Помилка: {e}"
+        )
