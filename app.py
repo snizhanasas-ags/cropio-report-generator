@@ -1,15 +1,9 @@
-"""
-Cropio Report System v2.0
-Production structure foundation.
-
-Modules inside one file:
-- UI
-- File validation
-- Cropio work reader
-- Fuel reader
-- Template processor
-- Excel generator
-"""
+# Cropio Report Generator v3
+# Production version foundation
+# This file is prepared for the real Cropio workflow:
+# - work report
+# - fuel report
+# - Excel template preservation
 
 import streamlit as st
 import pandas as pd
@@ -19,243 +13,153 @@ from copy import copy
 from io import BytesIO
 
 
-# ==========================
-# CONFIG
-# ==========================
-
 st.set_page_config(
-    page_title="Cropio Report System",
-    page_icon="🚜",
-    layout="wide"
+    page_title="Cropio Report Generator v3",
+    page_icon="🚜"
 )
 
 
-# ==========================
-# HELPERS
-# ==========================
-
-def normalize(value):
-    if value is None:
+def norm(v):
+    if v is None:
         return ""
-    return str(value).strip().lower()
+    return str(v).strip().lower()
 
 
-def find_column(df, variants):
-    for col in df.columns:
-        col_name = normalize(col)
-        for item in variants:
-            if item.lower() in col_name:
-                return col
+def find_col(columns, names):
+    for c in columns:
+        for n in names:
+            if n in norm(c):
+                return c
     return None
 
 
-# ==========================
-# CROPIO WORK
-# ==========================
-
-def load_work_report(file):
-
-    xls = pd.ExcelFile(file)
+def read_work(file):
     df = pd.read_excel(
         file,
-        sheet_name=xls.sheet_names[0]
+        sheet_name="Machine tasks",
+        header=1
     )
 
-    machine = find_column(
-        df,
-        ["машина", "техніка", "machine", "vehicle"]
+    machine = find_col(
+        df.columns,
+        ["машина", "machine"]
     )
 
     if not machine:
-        raise Exception(
-            "У звіті роботи не знайдено колонку техніки"
-        )
+        raise Exception("Не знайдено техніку у звіті роботи")
 
     return df, machine
 
 
-# ==========================
-# FUEL ENGINE
-# ==========================
-
-def load_fuel_report(file):
-
-    xls = pd.ExcelFile(file)
-
-    result = None
-
-    for header in range(0, 20):
-
-        temp = pd.read_excel(
-            file,
-            sheet_name=xls.sheet_names[0],
-            header=header
-        )
-
-        columns = " ".join(
-            [str(x).lower() for x in temp.columns]
-        )
-
-        if "отрим" in columns or "маш" in columns:
-            result = temp
-            break
-
-    if result is None:
-        raise Exception(
-            "Не знайдено таблицю видачі палива"
-        )
-
-    machine = find_column(
-        result,
-        ["отримувач", "машина", "техніка"]
+def read_fuel(file):
+    df = pd.read_excel(
+        file,
+        sheet_name=0,
+        header=8
     )
 
-    amount = find_column(
-        result,
-        ["кількість", "літр", "паливо"]
+    machine = find_col(
+        df.columns,
+        ["отримувач"]
     )
 
-    source = find_column(
-        result,
-        ["азс", "джерело", "паливозаправник", "заправ"]
+    source = find_col(
+        df.columns,
+        ["азс", "паливозаправник"]
+    )
+
+    amount = find_col(
+        df.columns,
+        ["кількість"]
     )
 
     if not machine or not amount:
-        raise Exception(
-            "Не знайдені колонки палива"
-        )
-
-    return result, machine, amount, source
-
-
-def prepare_fuel(df, machine, amount, source):
-
-    df = df.copy()
-
-    df[amount] = (
-        df[amount]
-        .astype(str)
-        .str.replace(",", ".")
-    )
+        raise Exception("Не знайдено дані палива")
 
     df[amount] = pd.to_numeric(
         df[amount],
         errors="coerce"
     )
 
-    df = df.dropna(
-        subset=[machine, amount]
-    )
+    df = df.dropna(subset=[amount])
 
-    if source is None:
-        df["Джерело"] = "Паливо"
-        source = "Джерело"
-
-    return (
+    fuel = (
         df.groupby([machine, source])[amount]
         .sum()
-        .reset_index(),
-        source
+        .reset_index()
     )
 
-
-# ==========================
-# EXCEL TEMPLATE ENGINE
-# ==========================
-
-def copy_style(ws, source_row, target_row):
-
-    for col in range(1, ws.max_column + 1):
-
-        src = ws.cell(source_row, col)
-        dst = ws.cell(target_row, col)
-
-        if src.has_style:
-            dst._style = copy(src._style)
-
-        dst.number_format = src.number_format
+    return fuel, machine, source, amount
 
 
-def generate_excel(
-        template,
-        work,
-        fuel,
-        work_machine,
-        fuel_machine,
-        fuel_amount,
-        fuel_source
-):
+def copy_row(ws, source, target):
+    for c in range(1, ws.max_column + 1):
+        a = ws.cell(source, c)
+        b = ws.cell(target, c)
+
+        if a.has_style:
+            b._style = copy(a._style)
+
+        b.number_format = a.number_format
+
+
+def build_report(template, work, fuel, work_machine,
+                 fuel_machine, fuel_source, fuel_amount):
 
     wb = load_workbook(template)
     ws = wb.active
 
-    start_row = 2
-    style_row = ws.max_row
+    header_row = 2
+    start_row = 3
 
+    style_row = start_row
+
+    # clear old data only
     for row in ws.iter_rows(min_row=start_row):
         for cell in row:
             cell.value = None
 
-    row_index = start_row
-    used = set()
+    current = start_row
+    written_fuel = set()
 
     for _, row in work.iterrows():
 
-        if row_index > ws.max_row:
-            ws.insert_rows(row_index)
+        if current > ws.max_row:
+            ws.insert_rows(current)
 
-        copy_style(
-            ws,
-            style_row,
-            row_index
-        )
+        copy_row(ws, style_row, current)
 
-        for col, value in enumerate(row.tolist(), 1):
-
-            if col <= ws.max_column:
-                ws.cell(
-                    row_index,
-                    col
-                ).value = value
+        for i, value in enumerate(row.tolist(), 1):
+            if i <= ws.max_column:
+                ws.cell(current, i).value = value
 
         machine = row[work_machine]
 
-        key = normalize(machine)
+        if norm(machine) not in written_fuel:
 
-        if key not in used:
-
-            fuel_rows = fuel[
-                fuel[fuel_machine]
-                .astype(str)
+            f = fuel[
+                fuel[fuel_machine].astype(str)
                 ==
                 str(machine)
             ]
 
-            for _, fuel_row in fuel_rows.iterrows():
+            for _, fr in f.iterrows():
 
-                source = str(
-                    fuel_row[fuel_source]
-                )
+                # Find existing fuel columns only
+                source_name = str(fr[fuel_source])
 
-                amount = fuel_row[fuel_amount]
-
-                for cell in ws[1]:
-
-                    if normalize(cell.value) == normalize(source):
-
+                for cell in ws[header_row]:
+                    if norm(cell.value) == norm(source_name):
                         target = ws.cell(
-                            row_index,
+                            current,
                             cell.column
                         )
+                        target.value = fr[fuel_amount]
+                        target.font = Font(color="FF0000")
 
-                        target.value = amount
-                        target.font = Font(
-                            color="FF0000"
-                        )
+            written_fuel.add(norm(machine))
 
-            used.add(key)
-
-        row_index += 1
+        current += 1
 
 
     output = BytesIO()
@@ -265,81 +169,50 @@ def generate_excel(
     return output
 
 
-# ==========================
-# USER INTERFACE
-# ==========================
-
-st.title("🚜 Cropio Report System v2.0")
-
-st.write(
-    "Завантажте звіт роботи, паливо та Excel-шаблон"
-)
-
+st.title("🚜 Cropio Report Generator v3")
 
 work_file = st.file_uploader(
-    "1. Звіт роботи техніки Cropio",
-    type=["xlsx"]
+    "1. Звіт роботи техніки",
+    type="xlsx"
 )
 
 fuel_file = st.file_uploader(
-    "2. Звіт видачі палива Cropio",
-    type=["xlsx"]
+    "2. Видача палива",
+    type="xlsx"
 )
 
 template_file = st.file_uploader(
-    "3. Ваш Excel шаблон",
-    type=["xlsx"]
+    "3. Excel шаблон",
+    type="xlsx"
 )
 
 
 if st.button("🟢 Сформувати звіт"):
 
     try:
+        work, work_machine = read_work(work_file)
 
-        if not work_file or not fuel_file or not template_file:
-            st.warning(
-                "Потрібно завантажити всі три файли"
-            )
-            st.stop()
+        fuel, fuel_machine, fuel_source, fuel_amount = read_fuel(fuel_file)
 
-        work, work_machine = load_work_report(
-            work_file
-        )
-
-        fuel, fuel_machine, fuel_amount, fuel_source = load_fuel_report(
-            fuel_file
-        )
-
-        fuel, fuel_source = prepare_fuel(
-            fuel,
-            fuel_machine,
-            fuel_amount,
-            fuel_source
-        )
-
-        result = generate_excel(
+        result = build_report(
             template_file,
             work,
             fuel,
             work_machine,
             fuel_machine,
-            fuel_amount,
-            fuel_source
+            fuel_source,
+            fuel_amount
         )
 
         st.success(
-            f"✅ Готово. Робіт знайдено: {len(work)}"
+            f"Готово. Робіт: {len(work)}"
         )
 
         st.download_button(
             "⬇️ Завантажити Excel",
             result,
-            "Cropio_report.xlsx",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            "Cropio_report_v3.xlsx"
         )
 
     except Exception as e:
-
-        st.error(
-            f"Помилка: {e}"
-        )
+        st.error(str(e))
