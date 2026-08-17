@@ -1,9 +1,6 @@
-# Cropio Report Generator v3
-# Production version foundation
-# This file is prepared for the real Cropio workflow:
-# - work report
-# - fuel report
-# - Excel template preservation
+# Cropio Report Generator v4
+# Auto analyzer version
+# Finds Cropio headers automatically before processing
 
 import streamlit as st
 import pandas as pd
@@ -14,162 +11,121 @@ from io import BytesIO
 
 
 st.set_page_config(
-    page_title="Cropio Report Generator v3",
+    page_title="Cropio Report Generator v4",
     page_icon="🚜"
 )
 
 
-def norm(v):
-    if v is None:
+def norm(x):
+    if x is None:
         return ""
-    return str(v).strip().lower()
+    return str(x).strip().lower()
 
 
-def find_col(columns, names):
-    for c in columns:
-        for n in names:
-            if n in norm(c):
-                return c
+def detect_header(file, sheet=0):
+    """
+    Finds the real header row automatically
+    """
+    for row in range(0, 25):
+        df = pd.read_excel(
+            file,
+            sheet_name=sheet,
+            header=row
+        )
+
+        text = " ".join(
+            [norm(c) for c in df.columns]
+        )
+
+        if (
+            "маш" in text
+            or "тех" in text
+            or "vehicle" in text
+            or "machine" in text
+        ):
+            return row, df
+
+    raise Exception(
+        "Не вдалося знайти рядок заголовків Cropio"
+    )
+
+
+def find_column(df, variants):
+    for col in df.columns:
+        for v in variants:
+            if v in norm(col):
+                return col
     return None
 
 
 def read_work(file):
-    df = pd.read_excel(
-        file,
-        sheet_name="Machine tasks",
-        header=1
-    )
 
-    machine = find_col(
-        df.columns,
-        ["машина", "machine"]
+    header, df = detect_header(file)
+
+    machine = find_column(
+        df,
+        [
+            "маш",
+            "тех",
+            "vehicle",
+            "machine",
+            "агрегат"
+        ]
     )
 
     if not machine:
-        raise Exception("Не знайдено техніку у звіті роботи")
+        raise Exception(
+            "Не знайдено колонку техніки. Знайдені колонки: "
+            + ", ".join(map(str, df.columns))
+        )
 
-    return df, machine
+    return df, machine, header
 
 
 def read_fuel(file):
-    df = pd.read_excel(
-        file,
-        sheet_name=0,
-        header=8
+
+    header, df = detect_header(file)
+
+    machine = find_column(
+        df,
+        [
+            "отрим",
+            "маш",
+            "тех"
+        ]
     )
 
-    machine = find_col(
-        df.columns,
-        ["отримувач"]
+    amount = find_column(
+        df,
+        [
+            "кіль",
+            "літр",
+            "палив"
+        ]
     )
 
-    source = find_col(
-        df.columns,
-        ["азс", "паливозаправник"]
-    )
-
-    amount = find_col(
-        df.columns,
-        ["кількість"]
+    source = find_column(
+        df,
+        [
+            "азс",
+            "паливозаправник",
+            "джерело"
+        ]
     )
 
     if not machine or not amount:
-        raise Exception("Не знайдено дані палива")
+        raise Exception(
+            "Не знайдено колонки палива"
+        )
 
-    df[amount] = pd.to_numeric(
-        df[amount],
-        errors="coerce"
-    )
-
-    df = df.dropna(subset=[amount])
-
-    fuel = (
-        df.groupby([machine, source])[amount]
-        .sum()
-        .reset_index()
-    )
-
-    return fuel, machine, source, amount
+    return df, machine, amount, source, header
 
 
-def copy_row(ws, source, target):
-    for c in range(1, ws.max_column + 1):
-        a = ws.cell(source, c)
-        b = ws.cell(target, c)
+st.title("🚜 Cropio Report Generator v4")
 
-        if a.has_style:
-            b._style = copy(a._style)
-
-        b.number_format = a.number_format
-
-
-def build_report(template, work, fuel, work_machine,
-                 fuel_machine, fuel_source, fuel_amount):
-
-    wb = load_workbook(template)
-    ws = wb.active
-
-    header_row = 2
-    start_row = 3
-
-    style_row = start_row
-
-    # clear old data only
-    for row in ws.iter_rows(min_row=start_row):
-        for cell in row:
-            cell.value = None
-
-    current = start_row
-    written_fuel = set()
-
-    for _, row in work.iterrows():
-
-        if current > ws.max_row:
-            ws.insert_rows(current)
-
-        copy_row(ws, style_row, current)
-
-        for i, value in enumerate(row.tolist(), 1):
-            if i <= ws.max_column:
-                ws.cell(current, i).value = value
-
-        machine = row[work_machine]
-
-        if norm(machine) not in written_fuel:
-
-            f = fuel[
-                fuel[fuel_machine].astype(str)
-                ==
-                str(machine)
-            ]
-
-            for _, fr in f.iterrows():
-
-                # Find existing fuel columns only
-                source_name = str(fr[fuel_source])
-
-                for cell in ws[header_row]:
-                    if norm(cell.value) == norm(source_name):
-                        target = ws.cell(
-                            current,
-                            cell.column
-                        )
-                        target.value = fr[fuel_amount]
-                        target.font = Font(color="FF0000")
-
-            written_fuel.add(norm(machine))
-
-        current += 1
-
-
-    output = BytesIO()
-    wb.save(output)
-    output.seek(0)
-
-    return output
-
-
-st.title("🚜 Cropio Report Generator v3")
+st.info(
+    "Версія з автоматичним аналізом структури Cropio"
+)
 
 work_file = st.file_uploader(
     "1. Звіт роботи техніки",
@@ -187,31 +143,41 @@ template_file = st.file_uploader(
 )
 
 
-if st.button("🟢 Сформувати звіт"):
+if st.button("🟢 Аналізувати та сформувати"):
 
     try:
-        work, work_machine = read_work(work_file)
 
-        fuel, fuel_machine, fuel_source, fuel_amount = read_fuel(fuel_file)
+        work, work_machine, work_header = read_work(work_file)
 
-        result = build_report(
-            template_file,
-            work,
-            fuel,
-            work_machine,
+        fuel, fuel_machine, fuel_amount, fuel_source, fuel_header = read_fuel(fuel_file)
+
+        st.success("Структура Cropio знайдена")
+
+        st.write(
+            "Звіт роботи:",
+            len(work),
+            "рядків"
+        )
+
+        st.write(
+            "Колонка техніки:",
+            work_machine
+        )
+
+        st.write(
+            "Заголовок у рядку:",
+            work_header + 1
+        )
+
+        st.write(
+            "Паливо:",
             fuel_machine,
-            fuel_source,
-            fuel_amount
+            fuel_amount,
+            fuel_source
         )
 
-        st.success(
-            f"Готово. Робіт: {len(work)}"
-        )
-
-        st.download_button(
-            "⬇️ Завантажити Excel",
-            result,
-            "Cropio_report_v3.xlsx"
+        st.warning(
+            "Excel генератор буде підключено після підтвердження структури"
         )
 
     except Exception as e:
